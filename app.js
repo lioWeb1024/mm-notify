@@ -3,6 +3,52 @@ import {logger} from './logger.js';
 import {readDesktopSession} from './session.js';
 import {sendTelegramMessage} from './telegram.js';
 import {runReconnectingWebSocket} from './websocket.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const lockDir = path.join(os.tmpdir(), `mm-notify-${process.getuid?.() ?? 'user'}.lock`);
+
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireSingleInstance() {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      fs.mkdirSync(lockDir, {mode: 0o700});
+      fs.writeFileSync(path.join(lockDir, 'pid'), String(process.pid), {mode: 0o600});
+      return;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const pid = Number.parseInt(fs.readFileSync(path.join(lockDir, 'pid'), 'utf8'), 10);
+      if (processIsAlive(pid)) {
+        logger.warn(`mm-notify 已经在运行（PID ${pid}），本次不再启动`);
+        process.exit(0);
+      }
+      fs.rmSync(lockDir, {recursive: true, force: true});
+    }
+  }
+  throw new Error('无法获取 mm-notify 单实例锁');
+}
+
+function releaseSingleInstance() {
+  try {
+    const pid = Number.parseInt(fs.readFileSync(path.join(lockDir, 'pid'), 'utf8'), 10);
+    if (pid === process.pid) fs.rmSync(lockDir, {recursive: true, force: true});
+  } catch {
+    // 锁已不存在时无需处理。
+  }
+}
+
+acquireSingleInstance();
+process.on('exit', releaseSingleInstance);
 
 if (!config.telegramBotToken || !config.telegramChatId) {
   logger.error('缺少 Telegram 配置。先在 .env 填写 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID');
@@ -64,26 +110,33 @@ function parsePosted(event) {
 }
 
 let notificationQueue = Promise.resolve();
-function enqueueNotification(item) {
-  const text = [
-    '🔔 Mattermost',
-    '',
-    '频道：', item.channel,
-    '',
-    '发送人：', item.sender,
-    '',
-    '内容：', item.post.message || '(无文字内容)',
-  ].join('\n');
+function enqueueText(text) {
   notificationQueue = notificationQueue
     .then(() => sendTelegramMessage({
       token: config.telegramBotToken,
       chatId: config.telegramChatId,
       text,
     }))
+    .catch((error) => logger.error(error.message));
+  return notificationQueue;
+}
+
+function enqueueNotification(item) {
+  const text = [
+    '🔔 Mattermost',
+    `频道：${item.channel}`,
+    `发送人：${item.sender}`,
+    `内容：${item.post.message || '(无文字内容)'}`,
+  ].join('\n');
+  notificationQueue = enqueueText(text)
     .then(() => logger.info(`已发送 Telegram 通知: ${item.isDirect ? '私聊' : '@提及'}`))
     .catch((error) => logger.error(error.message));
 }
 
+let shuttingDown = false;
+let sessionInvalidNotified = false;
+let connectionGeneration = 0;
+let disconnectNotified = false;
 const stop = runReconnectingWebSocket({
   baseUrl: config.mattermostUrl,
   getSession,
@@ -92,12 +145,44 @@ const stop = runReconnectingWebSocket({
     const item = parsePosted(event);
     if (item) enqueueNotification(item);
   },
+  onConnected: () => {
+    sessionInvalidNotified = false;
+    const generation = ++connectionGeneration;
+    setTimeout(() => {
+      if (shuttingDown || generation !== connectionGeneration) return;
+      enqueueText(disconnectNotified
+        ? '✅ Mattermost 通知监听已恢复并稳定连接'
+        : '✅ Mattermost 通知监听已连接');
+      disconnectNotified = false;
+    }, 30000);
+  },
+  onDisconnected: ({code, reason}) => {
+    if (shuttingDown) return;
+    connectionGeneration += 1;
+    if (disconnectNotified) return;
+    disconnectNotified = true;
+    enqueueText([
+      '⚠️ Mattermost 连接已断开',
+      `状态码：${code}`,
+      reason ? `原因：${reason}` : '',
+      `将在 ${config.reconnectMs / 1000} 秒后重连`,
+    ].filter(Boolean).join('\n'));
+  },
+  onSessionInvalid: () => {
+    if (sessionInvalidNotified || shuttingDown) return;
+    sessionInvalidNotified = true;
+    enqueueText('🔐 Mattermost Session 已失效或已退出登录\n请重新登录 Mattermost，程序不会自动登录。');
+  },
 });
 
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info(`收到 ${signal}，退出`);
     stop();
+    await enqueueText(`🛑 Mattermost 通知监听已关闭\n信号：${signal}`);
+    releaseSingleInstance();
     process.exit(0);
   });
 }

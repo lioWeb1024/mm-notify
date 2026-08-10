@@ -26,6 +26,8 @@ const stop = runReconnectingWebSocket({
   onEvent: (event) => console.log(JSON.stringify(event, null, 2)),
 });
 
+logger.info('诊断模式：连接后将打印服务器发送的全部事件');
+
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     logger.info(`收到 ${signal}，退出`);
