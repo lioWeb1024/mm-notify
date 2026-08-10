@@ -1,0 +1,23 @@
+{
+  "name": "mm-notify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mattermost Desktop session WebSocket diagnostics",
+  "type": "module",
+  "scripts": {
+    "start": "node app.js",
+    "diagnose": "node diagnose.js",
+    "dev": "node app.js",
+    "telegram:setup": "node telegram-setup.js",
+    "telegram:test": "node telegram-setup.js --send-test",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "dotenv": "^17.2.1",
+    "ws": "^8.18.3"
+  }
+}
