@@ -15,12 +15,6 @@
 Mattermost Desktop 是 Electron 应用。macOS 默认数据目录是：
 
 ```text
-~/Library/Application Support/Mattermost
-```
-
-本机安装的是公司定制版“叮咚”，运行参数显示其数据目录实际是：
-
-```text
 ~/Library/Application Support/叮咚
 ```
 
