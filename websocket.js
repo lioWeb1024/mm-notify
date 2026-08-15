@@ -20,6 +20,7 @@ export function runReconnectingWebSocket({
   let socket;
   let timer;
   let heartbeatTimer;
+  let sessionCheckTimer;
   let awaitingPong = false;
 
   const stopHeartbeat = () => {
@@ -40,6 +41,29 @@ export function runReconnectingWebSocket({
       awaitingPong = true;
       socket.ping();
     }, 25000);
+  };
+
+  const stopSessionCheck = () => {
+    clearInterval(sessionCheckTimer);
+    sessionCheckTimer = undefined;
+  };
+
+  const startSessionCheck = (connectedSession) => {
+    stopSessionCheck();
+    sessionCheckTimer = setInterval(() => {
+      if (socket?.readyState !== WebSocket.OPEN) return;
+      try {
+        const latestSession = getSession();
+        if (latestSession.cookieHeader !== connectedSession.cookieHeader) {
+          logger.info('检测到 Mattermost Session 已变化，重新连接');
+          socket.terminate();
+        }
+      } catch (error) {
+        logger.warn('当前无法读取 Mattermost Session，等待重新登录:', error.message);
+        onSessionInvalid(error);
+        socket.terminate();
+      }
+    }, 10000);
   };
 
   const schedule = () => {
@@ -74,7 +98,8 @@ export function runReconnectingWebSocket({
     socket.on('open', () => {
       logger.info('WebSocket 已连接');
       startHeartbeat();
-      onConnected();
+      startSessionCheck(session);
+      onConnected(session);
     });
     socket.on('pong', () => {
       awaitingPong = false;
@@ -97,6 +122,7 @@ export function runReconnectingWebSocket({
     socket.on('error', (error) => logger.warn('WebSocket 错误:', error.message));
     socket.on('close', (code, reason) => {
       stopHeartbeat();
+      stopSessionCheck();
       logger.warn(`WebSocket 已关闭: ${code} ${reason.toString()}`.trim());
       onDisconnected({code, reason: reason.toString()});
       schedule();
@@ -108,6 +134,7 @@ export function runReconnectingWebSocket({
     stopped = true;
     clearTimeout(timer);
     stopHeartbeat();
+    stopSessionCheck();
     socket?.close(1000, 'shutdown');
   };
 }

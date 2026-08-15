@@ -145,8 +145,16 @@ const stop = runReconnectingWebSocket({
     const item = parsePosted(event);
     if (item) enqueueNotification(item);
   },
-  onConnected: () => {
+  onConnected: (session) => {
     sessionInvalidNotified = false;
+    getCurrentUser(session)
+      .then((currentUser) => {
+        me = currentUser;
+        logger.info(`已刷新当前用户: @${me.username}`);
+      })
+      .catch((error) => {
+        logger.warn('刷新当前用户失败:', error.message);
+      });
     const generation = ++connectionGeneration;
     setTimeout(() => {
       if (shuttingDown || generation !== connectionGeneration) return;

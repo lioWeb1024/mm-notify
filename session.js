@@ -104,10 +104,14 @@ export function readDesktopSession({url, desktopDataDir = '', keychainService = 
     for (const service of services) {
       try {
         const password = keychainPassword(service);
-        const cookies = Object.fromEntries(rows.map((row) => [
-          row.name,
-          row.value || decryptChromiumCookie(row.encrypted_value, password, row.host_key),
-        ]));
+        const cookies = {};
+        for (const row of rows) {
+          // Rows are ordered newest first. Keep the first value for each cookie
+          // so an older cookie from another matching domain cannot overwrite it.
+          if (Object.hasOwn(cookies, row.name)) continue;
+          cookies[row.name] = row.value
+            || decryptChromiumCookie(row.encrypted_value, password, row.host_key);
+        }
         if (!cookies.MMAUTHTOKEN) continue;
         return {
           dataDir,
