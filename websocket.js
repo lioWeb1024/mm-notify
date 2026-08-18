@@ -11,6 +11,7 @@ export function runReconnectingWebSocket({
   baseUrl,
   getSession,
   reconnectMs,
+  userAgent,
   onEvent,
   onConnected = () => {},
   onDisconnected = () => {},
@@ -91,6 +92,7 @@ export function runReconnectingWebSocket({
       headers: {
         Cookie: session.cookieHeader,
         Origin: baseUrl,
+        'User-Agent': userAgent,
       },
       handshakeTimeout: 15000,
     });

@@ -64,7 +64,10 @@ const getSession = () => readDesktopSession({
 
 async function getCurrentUser(session) {
   const response = await fetch(`${config.mattermostUrl}/api/v4/users/me`, {
-    headers: {Cookie: session.cookieHeader},
+    headers: {
+      Cookie: session.cookieHeader,
+      'User-Agent': config.userAgent,
+    },
     signal: AbortSignal.timeout(15000),
   });
   if (response.status === 401 || response.status === 403) {
@@ -141,6 +144,7 @@ const stop = runReconnectingWebSocket({
   baseUrl: config.mattermostUrl,
   getSession,
   reconnectMs: config.reconnectMs,
+  userAgent: config.userAgent,
   onEvent: (event) => {
     const item = parsePosted(event);
     if (item) enqueueNotification(item);

@@ -20,6 +20,8 @@ Mattermost Desktop 是 Electron 应用。macOS 默认数据目录是：
 
 程序会优先检查正在运行的 Electron 进程的 `--user-data-dir`，再尝试标准路径和“叮咚”路径。它只读 Chromium `Cookies` SQLite 数据库，从 macOS Keychain 的 `<应用名> Safe Storage` 获取解密密钥，解密 `MMAUTHTOKEN`、`MMCSRF`、`MMUSERID`。WebSocket 通过 Cookie 请求头复用该会话。
 
+访问 Mattermost 的 HTTP Session 验证请求和 WebSocket 握手统一携带叮咚桌面客户端 UA。`sign` 按客户端逻辑通过 `MD5(appId + buildTimestamp)` 生成；其中时间戳是当前客户端版本的构建常量，不是请求时的当前时间。
+
 首次运行时，macOS 可能询问是否允许访问钥匙串中的“叮咚 Safe Storage”，请选择允许。程序不会输出解密密钥或 Cookie。
 
 ## 环境

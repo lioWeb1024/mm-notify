@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import {dingDongUserAgent} from './user-agent.js';
 
 export const config = Object.freeze({
   mattermostUrl: (process.env.MM_URL || 'https://second.dingdongs.vip').replace(/\/+$/, ''),
@@ -11,4 +12,5 @@ export const config = Object.freeze({
     .split(',')
     .map((name) => name.trim().replace(/^@/, ''))
     .filter(Boolean),
+  userAgent: dingDongUserAgent,
 });

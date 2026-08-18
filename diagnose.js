@@ -23,6 +23,7 @@ const stop = runReconnectingWebSocket({
   baseUrl: config.mattermostUrl,
   getSession,
   reconnectMs: config.reconnectMs,
+  userAgent: config.userAgent,
   onEvent: (event) => console.log(JSON.stringify(event, null, 2)),
 });
 
