@@ -1,9 +1,13 @@
 import WebSocket from 'ws';
 import {logger} from './logger.js';
+import {desktopWebSocketHeaders} from './request-headers.js';
 
 export function websocketUrl(baseUrl) {
   const url = new URL('/api/v4/websocket', baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.searchParams.set('connection_id', '');
+  url.searchParams.set('sequence_number', '0');
+  url.searchParams.set('posted_ack', 'true');
   return url.toString();
 }
 
@@ -12,6 +16,7 @@ export function runReconnectingWebSocket({
   getSession,
   reconnectMs,
   userAgent,
+  validateSession,
   onEvent,
   onConnected = () => {},
   onDisconnected = () => {},
@@ -22,24 +27,18 @@ export function runReconnectingWebSocket({
   let timer;
   let heartbeatTimer;
   let sessionCheckTimer;
-  let awaitingPong = false;
+  let invalidCookieHeader;
+  let sessionWaitLogged = false;
 
   const stopHeartbeat = () => {
     clearInterval(heartbeatTimer);
     heartbeatTimer = undefined;
-    awaitingPong = false;
   };
 
   const startHeartbeat = () => {
     stopHeartbeat();
     heartbeatTimer = setInterval(() => {
       if (socket?.readyState !== WebSocket.OPEN) return;
-      if (awaitingPong) {
-        logger.warn('WebSocket 心跳超时，主动重建连接');
-        socket.terminate();
-        return;
-      }
-      awaitingPong = true;
       socket.ping();
     }, 25000);
   };
@@ -67,14 +66,13 @@ export function runReconnectingWebSocket({
     }, 10000);
   };
 
-  const schedule = () => {
+  const schedule = (delayMs = reconnectMs) => {
     if (stopped) return;
     clearTimeout(timer);
-    logger.info(`${reconnectMs / 1000} 秒后重新连接…`);
-    timer = setTimeout(connect, reconnectMs);
+    timer = setTimeout(connect, delayMs);
   };
 
-  const connect = () => {
+  const connect = async () => {
     let session;
     try {
       session = getSession();
@@ -86,26 +84,51 @@ export function runReconnectingWebSocket({
       return;
     }
 
+    if (invalidCookieHeader === session.cookieHeader) {
+      if (!sessionWaitLogged) {
+        logger.warn('监听脚本读取的本地 Session 无效或未同步，已暂停 Socket 重连');
+        sessionWaitLogged = true;
+      }
+      schedule(30000);
+      return;
+    }
+
+    if (validateSession) {
+      try {
+        await validateSession(session);
+        invalidCookieHeader = undefined;
+        sessionWaitLogged = false;
+      } catch (error) {
+        if (error.authInvalid) {
+          invalidCookieHeader = session.cookieHeader;
+          onSessionInvalid(error);
+          logger.warn('当前磁盘 Session 验证失败，等待叮咚刷新 Cookie');
+          schedule(30000);
+          return;
+        }
+        logger.warn('Session 验证遇到网络错误，稍后重试:', error.message);
+        schedule(30000);
+        return;
+      }
+    }
+
     const url = websocketUrl(baseUrl);
     logger.info(`连接 ${url}`);
     socket = new WebSocket(url, {
-      headers: {
-        Cookie: session.cookieHeader,
-        Origin: baseUrl,
-        'User-Agent': userAgent,
-      },
+      headers: desktopWebSocketHeaders({userAgent, origin: baseUrl, session}),
       handshakeTimeout: 15000,
     });
 
     socket.on('open', () => {
       logger.info('WebSocket 已连接');
+      socket._socket?.setKeepAlive?.(true, 30000);
       startHeartbeat();
       startSessionCheck(session);
       onConnected(session);
     });
-    socket.on('pong', () => {
-      awaitingPong = false;
-    });
+    // 部分代理/VPN 会丢弃 WebSocket 控制帧。单次缺少 Pong 不能作为
+    // 真实断线证据，否则会由脚本自己制造 1006。
+    socket.on('pong', () => {});
     socket.on('message', (data) => {
       try {
         onEvent(JSON.parse(data.toString()));
@@ -127,6 +150,7 @@ export function runReconnectingWebSocket({
       stopSessionCheck();
       logger.warn(`WebSocket 已关闭: ${code} ${reason.toString()}`.trim());
       onDisconnected({code, reason: reason.toString()});
+      logger.info(`${reconnectMs / 1000} 秒后重新连接…`);
       schedule();
     });
   };

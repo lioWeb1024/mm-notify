@@ -3,6 +3,7 @@ import {logger} from './logger.js';
 import {readDesktopSession} from './session.js';
 import {sendTelegramMessage} from './telegram.js';
 import {runReconnectingWebSocket} from './websocket.js';
+import {desktopHttpHeaders} from './request-headers.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -64,14 +65,14 @@ const getSession = () => readDesktopSession({
 
 async function getCurrentUser(session) {
   const response = await fetch(`${config.mattermostUrl}/api/v4/users/me`, {
-    headers: {
-      Cookie: session.cookieHeader,
-      'User-Agent': config.userAgent,
-    },
+    headers: desktopHttpHeaders({userAgent: config.userAgent, origin: config.mattermostUrl, session}),
     signal: AbortSignal.timeout(15000),
   });
   if (response.status === 401 || response.status === 403) {
-    throw new Error('请重新登录 Mattermost');
+    const error = new Error('请重新登录 Mattermost');
+    error.authInvalid = true;
+    error.status = response.status;
+    throw error;
   }
   if (!response.ok) throw new Error(`读取当前用户失败: HTTP ${response.status}`);
   return response.json();
@@ -79,12 +80,24 @@ async function getCurrentUser(session) {
 
 const initialSession = getSession();
 let me;
+let initiallySessionInvalid = false;
 try {
   me = await getCurrentUser(initialSession);
   logger.info(`监听提及: ${[me.username, ...config.mentionNames].map((name) => `@${name}`).join(', ')}`);
 } catch (error) {
   logger.error(error.message);
-  process.exit(1);
+  if (!error.authInvalid) process.exit(1);
+  initiallySessionInvalid = true;
+  me = {id: '', username: ''};
+  try {
+    await sendTelegramMessage({
+      token: config.telegramBotToken,
+      chatId: config.telegramChatId,
+      text: '🔐 Mattermost 监听 Session 无效或未同步\n叮咚界面可能仍然正常，但监听脚本读到的磁盘 Cookie 已失效。\n请完全退出并重新打开叮咚，让当前 Session 同步到磁盘。',
+    });
+  } catch (telegramError) {
+    logger.error(telegramError.message);
+  }
 }
 
 function parsePosted(event) {
@@ -137,53 +150,89 @@ function enqueueNotification(item) {
 }
 
 let shuttingDown = false;
-let sessionInvalidNotified = false;
+let sessionInvalidNotified = initiallySessionInvalid;
 let connectionGeneration = 0;
 let disconnectNotified = false;
+let disconnectNoticeTimer;
+let outageStartedAt;
+let lastDisconnect = {};
+let initialConnectionNotified = false;
+
+function notifySessionInvalid() {
+  if (sessionInvalidNotified || shuttingDown) return;
+  sessionInvalidNotified = true;
+  clearTimeout(disconnectNoticeTimer);
+  disconnectNoticeTimer = undefined;
+  enqueueText('🔐 Mattermost 监听 Session 无效或未同步\n叮咚界面可能仍然正常，但监听脚本读到的磁盘 Cookie 已失效。\n请完全退出并重新打开叮咚，让当前 Session 同步到磁盘。');
+}
+
+async function verifySessionAfterDisconnect() {
+  try {
+    await getCurrentUser(getSession());
+  } catch (error) {
+    if (error.authInvalid) notifySessionInvalid();
+    else logger.warn('断线后暂时无法验证 Session，按网络故障继续重连:', error.message);
+  }
+}
+
 const stop = runReconnectingWebSocket({
   baseUrl: config.mattermostUrl,
   getSession,
   reconnectMs: config.reconnectMs,
-  userAgent: config.userAgent,
+  userAgent: config.webSocketUserAgent,
+  validateSession: getCurrentUser,
   onEvent: (event) => {
     const item = parsePosted(event);
     if (item) enqueueNotification(item);
   },
   onConnected: (session) => {
-    sessionInvalidNotified = false;
     getCurrentUser(session)
       .then((currentUser) => {
         me = currentUser;
+        sessionInvalidNotified = false;
         logger.info(`已刷新当前用户: @${me.username}`);
       })
       .catch((error) => {
         logger.warn('刷新当前用户失败:', error.message);
+        if (error.authInvalid) notifySessionInvalid();
       });
+    clearTimeout(disconnectNoticeTimer);
+    disconnectNoticeTimer = undefined;
     const generation = ++connectionGeneration;
     setTimeout(() => {
       if (shuttingDown || generation !== connectionGeneration) return;
-      enqueueText(disconnectNotified
-        ? '✅ Mattermost 通知监听已恢复并稳定连接'
-        : '✅ Mattermost 通知监听已连接');
+      if (disconnectNotified) {
+        enqueueText(`✅ Mattermost 通知监听已恢复并稳定连接\n断线时间：${new Date(outageStartedAt).toLocaleString('zh-CN')}\n恢复时间：${new Date().toLocaleString('zh-CN')}`);
+      } else if (!initialConnectionNotified) {
+        enqueueText('✅ Mattermost 通知监听已连接');
+        initialConnectionNotified = true;
+      }
       disconnectNotified = false;
+      outageStartedAt = undefined;
     }, 30000);
   },
   onDisconnected: ({code, reason}) => {
     if (shuttingDown) return;
     connectionGeneration += 1;
-    if (disconnectNotified) return;
-    disconnectNotified = true;
-    enqueueText([
-      '⚠️ Mattermost 连接已断开',
-      `状态码：${code}`,
-      reason ? `原因：${reason}` : '',
-      `将在 ${config.reconnectMs / 1000} 秒后重连`,
-    ].filter(Boolean).join('\n'));
+    lastDisconnect = {code, reason};
+    outageStartedAt ??= Date.now();
+    verifySessionAfterDisconnect();
+    if (disconnectNotified || disconnectNoticeTimer) return;
+    disconnectNoticeTimer = setTimeout(() => {
+      disconnectNoticeTimer = undefined;
+      if (shuttingDown) return;
+      disconnectNotified = true;
+      enqueueText([
+        '⚠️ Mattermost 连接已确认中断',
+        '持续时间：60 秒以上',
+        `最近状态码：${lastDisconnect.code}`,
+        lastDisconnect.reason ? `原因：${lastDisconnect.reason}` : '',
+        `脚本正在每 ${config.reconnectMs / 1000} 秒自动重连`,
+      ].filter(Boolean).join('\n'));
+    }, 60000);
   },
   onSessionInvalid: () => {
-    if (sessionInvalidNotified || shuttingDown) return;
-    sessionInvalidNotified = true;
-    enqueueText('🔐 Mattermost Session 已失效或已退出登录\n请重新登录 Mattermost，程序不会自动登录。');
+    notifySessionInvalid();
   },
 });
 
@@ -191,6 +240,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearTimeout(disconnectNoticeTimer);
     logger.info(`收到 ${signal}，退出`);
     stop();
     await enqueueText(`🛑 Mattermost 通知监听已关闭\n信号：${signal}`);

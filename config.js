@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import {dingDongUserAgent} from './user-agent.js';
+import {dingDongUserAgent, dingDongWebSocketUserAgent} from './user-agent.js';
 
 export const config = Object.freeze({
   mattermostUrl: (process.env.MM_URL || 'https://second.dingdongs.vip').replace(/\/+$/, ''),
@@ -13,4 +13,5 @@ export const config = Object.freeze({
     .map((name) => name.trim().replace(/^@/, ''))
     .filter(Boolean),
   userAgent: dingDongUserAgent,
+  webSocketUserAgent: dingDongWebSocketUserAgent,
 });

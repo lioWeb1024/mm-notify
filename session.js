@@ -117,6 +117,7 @@ export function readDesktopSession({url, desktopDataDir = '', keychainService = 
           dataDir,
           keychainService: service,
           userId: cookies.MMUSERID || '',
+          csrfToken: cookies.MMCSRF || '',
           cookieHeader: COOKIE_NAMES.filter((name) => cookies[name])
             .map((name) => `${name}=${cookies[name]}`).join('; '),
         };
