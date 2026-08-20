@@ -89,6 +89,7 @@ export function runReconnectingWebSocket({
         logger.warn('监听脚本读取的本地 Session 无效或未同步，已暂停 Socket 重连');
         sessionWaitLogged = true;
       }
+      await onSessionInvalid(new Error('Mattermost Session 仍未恢复'));
       schedule(30000);
       return;
     }
@@ -101,7 +102,7 @@ export function runReconnectingWebSocket({
       } catch (error) {
         if (error.authInvalid) {
           invalidCookieHeader = session.cookieHeader;
-          onSessionInvalid(error);
+          await onSessionInvalid(error);
           logger.warn('当前磁盘 Session 验证失败，等待叮咚刷新 Cookie');
           schedule(30000);
           return;

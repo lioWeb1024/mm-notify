@@ -1,28 +1,23 @@
 # mm-notify
 
-长期监听 Mattermost Desktop 已登录会话的工具。诊断模式会打印全部事件；正式模式只把 @提及和一对一私聊发送到 Telegram。
+使用独立 Mattermost Session 长期监听消息的工具。正式模式只把 @提及和一对一私聊发送到 Telegram，不依赖叮咚 Electron 的本地 Cookie。
 
 ## 安全边界
 
-- 不调用 `POST /api/v4/users/login`
-- 不读取或保存用户名、密码
+- 密码仅保存在 macOS 钥匙串，不写入项目文件或日志
+- 启动时优先复用已保存 Session，明确 `401/403` 时才调用登录接口
+- 连续密码认证失败最多两次，登录锁跨进程重启保留
 - 不把 Session token 写入日志或 `.env`
-- Session 失效时只输出“请重新登录 Mattermost”
+- `direct-session.json` 和 `direct-login-lock.json` 权限为 `600`
 - Telegram Bot token 仅从本机 `.env` 读取
 
-## 原理与本机检测结果
+## 原理
 
-Mattermost Desktop 是 Electron 应用。macOS 默认数据目录是：
-
-```text
-~/Library/Application Support/叮咚
-```
-
-程序会优先检查正在运行的 Electron 进程的 `--user-data-dir`，再尝试标准路径和“叮咚”路径。它只读 Chromium `Cookies` SQLite 数据库，从 macOS Keychain 的 `<应用名> Safe Storage` 获取解密密钥，解密 `MMAUTHTOKEN`、`MMCSRF`、`MMUSERID`。WebSocket 通过 Cookie 请求头复用该会话。
+程序使用钥匙串中的登录密码创建自己的 Session，保存 Token、Cookie 和 CSRF 字段。叮咚客户端可以退出、重启或保持打开，都不会影响监听服务的 Session。
 
 访问 Mattermost 的 HTTP Session 验证请求和 WebSocket 握手统一携带叮咚桌面客户端 UA。`sign` 按客户端逻辑通过 `MD5(appId + buildTimestamp)` 生成；其中时间戳是当前客户端版本的构建常量，不是请求时的当前时间。
 
-首次运行时，macOS 可能询问是否允许访问钥匙串中的“叮咚 Safe Storage”，请选择允许。程序不会输出解密密钥或 Cookie。
+首次运行时，macOS 可能询问是否允许访问钥匙串中的 `mm-notify Mattermost Login`，请选择允许。
 
 ## 环境
 
